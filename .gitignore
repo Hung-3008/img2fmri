@@ -1,0 +1,49 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyd
+*.pyo
+*.egg-info/
+.eggs/
+
+# Distributions
+dist/
+build/
+*.egg
+*.whl
+
+# Installer logs
+*.log
+
+# Unit test / coverage reports
+.pytest_cache/
+htmlcov/
+.coverage
+.tox/
+
+# Virtual environment
+venv/
+.venv/
+env/
+.env/
+
+# IDE specific files
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+
+# OS generated files
+.DS_Store
+.Trashes
+Thumbs.db
+
+# Jupyter Notebook files
+.ipynb_checkpoints
+
+# Python interpreter specific files
+tmp/
+lightning_logs/*
+BOLD5000/*
+NSD/*
