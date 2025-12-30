@@ -47,3 +47,4 @@ tmp/
 lightning_logs/*
 BOLD5000/*
 NSD/*
+data/*
