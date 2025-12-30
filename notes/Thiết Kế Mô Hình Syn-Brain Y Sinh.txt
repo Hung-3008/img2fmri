@@ -1,0 +1,237 @@
+﻿Báo cáo Nghiên cứu Chuyên sâu: Mô hình hóa Sinh lý Thần kinh và Tổng hợp Visual-to-fMRI bằng Flow Matching Ràng buộc Vật lý
+1. Giới thiệu: Sự chuyển dịch mô hình trong mã hóa não bộ
+Trong kỷ nguyên của khoa học thần kinh tính toán và trí tuệ nhân tạo, bài toán giải mã cách não bộ chuyển đổi các kích thích thị giác bên ngoài thành các phản ứng vỏ não bên trong—được gọi là "brain visual encoding"—đang đứng trước một bước ngoặt lịch sử. Mục tiêu cốt lõi của lĩnh vực này là xây dựng một hàm ánh xạ $f: \mathcal{X} \rightarrow \mathcal{Y}$, trong đó $\mathcal{X}$ đại diện cho không gian kích thích thị giác (ví dụ: hình ảnh, video) và $\mathcal{Y}$ đại diện cho không gian phản ứng huyết động học đo được bằng fMRI (cộng hưởng từ chức năng) tại từng voxel.
+Trong hơn một thập kỷ, các phương pháp tiếp cận chủ đạo đã dựa trên các mô hình hồi quy tuyến tính hoặc các mạng nơ-ron sâu (DNN) tất định (deterministic). Giả định ngầm định của các mô hình này là một kích thích thị giác cụ thể sẽ luôn gợi ra một phản ứng thần kinh cố định và bất biến. Tuy nhiên, thực tế sinh học của não bộ mâu thuẫn trực tiếp với giả định này. Các nghiên cứu quy mô lớn như Natural Scenes Dataset (NSD) 1 đã chỉ ra rằng các phản ứng thần kinh mang tính ngẫu nhiên (stochastic) cao: cùng một hình ảnh được trình chiếu cho cùng một đối tượng trong các lần thử nghiệm khác nhau sẽ tạo ra các mô hình tín hiệu fMRI khác biệt đáng kể. Sự biến thiên này không chỉ là nhiễu, mà còn phản ánh sự dao động nội tại của trạng thái não bộ, sự chú ý, và các đặc tính huyết động học phức tạp. Do đó, việc sử dụng các mô hình tất định để giải quyết một bài toán có bản chất "one-to-many" (một-nhiều) đã dẫn đến hiện tượng hồi quy về trung bình (regression to the mean), tạo ra các dự đoán bị làm mờ và thiếu các chi tiết tần số cao quan trọng.
+Sự ra đời của SynBrain 1 vào cuối năm 2024 và 2025 đã đánh dấu một sự thay đổi mô hình quan trọng: chuyển từ ánh xạ tất định sang học biểu diễn xác suất (probabilistic representation learning). Bằng cách mô hình hóa phân phối xác suất có điều kiện của các phản ứng fMRI thay vì một điểm dữ liệu duy nhất, SynBrain đã đạt được những bước tiến vượt bậc trong việc tổng hợp dữ liệu fMRI trung thực. Tuy nhiên, khi đặt SynBrain vào bối cảnh rộng lớn hơn của các tiến bộ trong Generative AI năm 2025—đặc biệt là sự trỗi dậy của Flow Matching và Neural Ordinary Differential Equations (Neural ODEs)—chúng ta nhận thấy rằng việc chỉ dựa vào các mô hình xác suất thống kê (như VAE) là chưa đủ. Để thực sự tạo ra một "bản sao kỹ thuật số" (digital twin) của não bộ, mô hình không chỉ cần bắt chước số liệu thống kê của dữ liệu mà còn phải tuân thủ các quy luật vật lý và sinh lý chi phối quá trình tạo ra tín hiệu đó.
+Báo cáo này sẽ cung cấp một phân tích toàn diện và sâu sắc về SynBrain, so sánh nó với các phương pháp State-of-the-Art (SOTA) hiện tại như MindSimulator và MindEye2. Chúng tôi sẽ đi sâu vào các cơ chế sinh lý học của tín hiệu BOLD thông qua mô hình Balloon-Windkessel, và cuối cùng, đề xuất một framework mới mang tên "PhysioNeuroFlow". Framework này tích hợp sức mạnh tính toán của Optimal Transport Flow Matching với sự chặt chẽ về mặt vật lý của các phương trình vi phân huyết động học, nhằm giải quyết triệt để các hạn chế của các phương pháp hiện hành.
+2. Phân tích Chuyên sâu về SynBrain và Bối cảnh SOTA
+Để thiết kế một hệ thống vượt trội, trước tiên cần phải phẫu thuật chi tiết kiến trúc của SynBrain, hiểu rõ những gì nó làm tốt và quan trọng hơn là những điểm yếu chí mạng của nó trong bối cảnh công nghệ năm 2025.
+2.1 SynBrain: Đột phá trong Mô hình hóa Xác suất
+SynBrain 1 được thiết kế để giải quyết vấn đề ánh xạ "một-nhiều" (one-to-many) trong mã hóa não bộ. Thay vì dự đoán một vector $y$ cố định cho đầu vào $x$, SynBrain học phân phối xác suất $P(Y|X)$. Kiến trúc của nó bao gồm hai thành phần chính: BrainVAE và Semantic-to-Neural (S2N) Mapper.
+2.1.1 BrainVAE: Biến thiên có Cấu trúc
+BrainVAE là một Variational Autoencoder (VAE) được thiết kế riêng cho dữ liệu fMRI. Khác với các Autoencoder tất định truyền thống (như trong MindSimulator 3), BrainVAE mã hóa tín hiệu fMRI vào một không gian tiềm ẩn (latent space) probabilistics, được tham số hóa bởi trung bình $\mu$ và phương sai $\sigma^2$.
+* Cơ chế hoạt động: Encoder $\mathcal{E}$ ánh xạ tín hiệu fMRI $y_{fMRI}$ thành một phân phối hậu nghiệm $q(z|y_{fMRI}) = \mathcal{N}(\mu, \sigma^2)$. Decoder $\mathcal{D}$ sau đó lấy mẫu $z$ từ phân phối này để tái tạo tín hiệu. Điều này cho phép mô hình nắm bắt được sự không chắc chắn và biến thiên tự nhiên của tín hiệu não.
+* Ràng buộc Ngữ nghĩa (Functional Consistency): Một điểm sáng tạo của BrainVAE là việc tích hợp hàm mất mát SoftCLIP.1 Hàm này buộc không gian tiềm ẩn của fMRI phải thẳng hàng với không gian ngữ nghĩa của mô hình thị giác CLIP. Điều này đảm bảo rằng mặc dù có sự biến thiên ngẫu nhiên (do nhiễu sinh lý hoặc trạng thái não), nội dung ngữ nghĩa cốt lõi (ví dụ: "đang nhìn thấy con chó") vẫn được bảo toàn trong biểu diễn tiềm ẩn. Đây là khái niệm "nhất quán chức năng" (functional consistency) mà SynBrain đề cao.
+2.1.2 S2N Mapper: Cầu nối Đa phương thức
+Thành phần thứ hai, S2N Mapper, giải quyết bài toán suy luận: làm thế nào để tạo ra fMRI từ hình ảnh khi không có dữ liệu fMRI đầu vào?
+* S2N Mapper là một mô hình Transformer nhẹ, học cách ánh xạ từ embedding hình ảnh cố định (từ CLIP) sang các tham số phân phối của không gian tiềm ẩn BrainVAE ($\mu, \sigma$).
+* Ánh xạ Điểm-tới-Phân phối: SynBrain gọi quá trình này là "point-to-distribution mapping". Từ một điểm dữ liệu hình ảnh duy nhất, mô hình dự đoán một phân phối các phản ứng não bộ khả dĩ. Điều này cho phép sinh ra nhiều mẫu fMRI khác nhau cho cùng một hình ảnh, mô phỏng chính xác hiện tượng biến thiên giữa các lần thử nghiệm (inter-trial variability).
+2.2 So sánh với MindSimulator và MindEye2
+Để đánh giá vị thế của SynBrain, chúng ta cần đặt nó lên bàn cân với các đối thủ cạnh tranh chính trong giai đoạn 2024-2025.
+2.2.1 MindSimulator: Hạn chế của Diffusion Tất định
+MindSimulator 3 là tiền thân trực tiếp của các phương pháp sinh fMRI. Nó sử dụng một Autoencoder tất định kết hợp với một mô hình khuếch tán (Diffusion Model) để sinh dữ liệu.
+* Vấn đề Mismatch: Các tác giả của SynBrain lập luận rằng MindSimulator gặp phải vấn đề "distribution mismatch".1 Trong quá trình huấn luyện, mô hình khuếch tán được điều kiện hóa trên các biểu diễn fMRI nhiễu. Tuy nhiên, khi suy luận (inference), mô hình bắt đầu từ nhiễu Gaussian thuần túy. Sự sai lệch giữa nhiễu huấn luyện và nhiễu suy luận dẫn đến sự mất ổn định, buộc người dùng phải thực hiện nhiều lần lấy mẫu và sử dụng các kỹ thuật hậu xử lý (post-selection) phức tạp để chọn ra kết quả tốt nhất.
+* Hiệu suất: Quá trình khử nhiễu lặp đi lặp lại của Diffusion Model (thường tốn 50-100 bước) chậm hơn đáng kể so với phương pháp ánh xạ một bước (one-step mapping) của SynBrain.
+2.2.2 MindEye2: Mô hình Chia sẻ và Dữ liệu Ít
+MindEye2 5 tập trung vào bài toán giải mã (fMRI-to-image) nhưng đóng góp một nguyên lý quan trọng cho mã hóa: Shared-Subject Modeling.
+* MindEye2 chứng minh rằng bằng cách ánh xạ dữ liệu của nhiều đối tượng vào một không gian tiềm ẩn chung (Shared Space) trước khi chiếu sang không gian ngữ nghĩa CLIP, mô hình có thể đạt hiệu suất cao ngay cả với dữ liệu huấn luyện rất ít (few-shot learning, chỉ 1 giờ dữ liệu).6
+* SynBrain đã kế thừa ý tưởng này trong các thử nghiệm "few-shot adaptation" của mình, cho thấy khả năng thích ứng nhanh với đối tượng mới bằng cách tinh chỉnh (fine-tuning) nhẹ trên nền tảng đã huấn luyện trước.
+2.3 Phê bình và Hạn chế của SynBrain
+Mặc dù SynBrain vượt trội hơn các phương pháp cũ về các chỉ số định lượng (MSE, Pearson Correlation), phân tích sâu hơn bộc lộ những hạn chế mang tính nền tảng, đặc biệt khi xét đến các yêu cầu về mô phỏng y sinh học chính xác:
+1. Hạn chế của VAE (Posterior Collapse & Oversmoothing): Bản chất của hàm mục tiêu VAE (tối ưu hóa ELBO - Evidence Lower Bound) thường dẫn đến việc làm mượt các chi tiết tần số cao.7 Trong fMRI, các biến động tần số cao và các đỉnh tín hiệu thoáng qua (transients) chứa đựng thông tin quan trọng về động lực học thần kinh. Việc BrainVAE "trung bình hóa" các biến động này để khớp với phân phối chuẩn $\mathcal{N}(0,I)$ có thể làm mất mát thông tin tinh tế này.
+2. Thiếu vắng Động lực học Thời gian (Temporal Dynamics): SynBrain xử lý các volume fMRI chủ yếu như các bản đồ không gian tĩnh hoặc chuỗi ngắn độc lập. Tuy nhiên, tín hiệu BOLD là một chuỗi thời gian liên tục được chi phối bởi các phương trình vi phân có độ trễ (delay) và quán tính (hysteresis). Việc bỏ qua tính chất nhân quả theo thời gian (temporal causality) khiến mô hình có thể sinh ra các mẫu fMRI đúng về mặt không gian nhưng sai về mặt diễn tiến thời gian.
+3. Sự "Mù" về Sinh lý học (Physiological Blindness): Đây là hạn chế lớn nhất. SynBrain là một mô hình "black-box" thuần túy dữ liệu (data-driven). Nó học các quy luật thống kê của các voxel nhưng hoàn toàn không biết gì về cơ chế sinh học tạo ra chúng. Nó không biết rằng tín hiệu BOLD được tạo ra bởi sự thay đổi thể tích máu và nồng độ deoxyhemoglobin. Do đó, nó có thể sinh ra các tín hiệu vi phạm các định luật bảo toàn vật lý (ví dụ: tín hiệu tăng vọt mà không có sự thay đổi dòng máu tương ứng). Trong các ứng dụng y tế, sự thiếu hụt ràng buộc vật lý này là không thể chấp nhận được.
+3. Cơ sở Y sinh: Mô hình Huyết động học Balloon-Windkessel
+Để khắc phục sự "mù" về sinh lý học của SynBrain, chúng ta cần tích hợp một mô hình tính toán mô tả chính xác mối quan hệ giữa hoạt động thần kinh và tín hiệu fMRI. Mô hình Balloon-Windkessel, được đề xuất bởi Buxton et al. (1998) 8 và hoàn thiện bởi Friston et al. (2000) 10, là tiêu chuẩn vàng cho nhiệm vụ này.
+3.1 Cơ chế Vật lý và Sinh học
+Tên gọi "Balloon-Windkessel" xuất phát từ hai hiện tượng vật lý:
+1. Hiệu ứng Windkessel: Trong hệ thống tuần hoàn, các động mạch có tính đàn hồi. Khi tim bơm máu, động mạch giãn ra để chứa năng lượng (như một tụ điện trong mạch điện), giúp dòng máu chảy liên tục thay vì ngắt quãng. Mandeville et al. (1999) 11 đã áp dụng nguyên lý này cho hệ thống tĩnh mạch não, giải thích sự trễ pha giữa lưu lượng máu và thể tích máu.
+2. Hiệu ứng Balloon: Buxton mô tả khoang tĩnh mạch não như một quả bóng có thể giãn nở. Khi hoạt động thần kinh gia tăng, dòng máu chảy vào ($f_{in}$) tăng nhanh hơn khả năng thoát ra ($f_{out}$) và khả năng giãn nở của tĩnh mạch. Điều này dẫn đến sự tích tụ thể tích máu.
+Cơ chế tạo tín hiệu BOLD (Blood Oxygen Level Dependent) dựa trên sự cân bằng giữa cung và cầu oxy:
+* Khi nơ-ron hoạt động, nó gửi tín hiệu làm giãn mạch, tăng dòng máu đến ($f$).
+* Dòng máu tăng mang theo nhiều oxy hơn mức mà mô não tiêu thụ (metabolic demand).
+* Kết quả là tỷ lệ hemoglobin khử oxy (deoxyhemoglobin - dHb) trong tĩnh mạch giảm xuống.
+* Vì dHb có tính thuận từ (paramagnetic) mạnh, nó làm nhiễu từ trường cục bộ và giảm tín hiệu MRI. Khi dHb giảm, tín hiệu MRI tăng lên. Đây là lý do tại sao hoạt động thần kinh tăng lại làm tăng tín hiệu fMRI.
+3.2 Mô hình hóa Toán học (State-Space Equations)
+Để tích hợp vào một framework học sâu, chúng ta cần biểu diễn mô hình này dưới dạng một hệ phương trình vi phân thường (ODEs). Theo Friston et al. (2000) và Buxton et al. (1998) 9, hệ thống bao gồm 4 biến trạng thái:
+* $s(t)$: Tín hiệu giãn mạch (Flow-inducing signal).
+* $f(t)$: Lưu lượng máu vào (Inflow), chuẩn hóa về 1 lúc nghỉ.
+* $v(t)$: Thể tích máu tĩnh mạch (Venous volume), chuẩn hóa về 1.
+* $q(t)$: Lượng deoxyhemoglobin, chuẩn hóa về 1.
+Hệ phương trình vi phân chi phối động lực học này như sau:
+1. Động lực học Tín hiệu Giãn mạch:
+Hoạt động thần kinh $u(t)$ kích thích tín hiệu giãn mạch $s(t)$, tín hiệu này bị tắt dần theo cơ chế tự điều chỉnh (autoregulatory feedback):
+
+
+
+
+$$\frac{ds}{dt} = \epsilon u(t) - \kappa_s s - \kappa_f (f - 1)$$
+* $\epsilon$: Hiệu suất nơ-ron (Neuronal efficacy).
+* $\kappa_s$: Tốc độ suy giảm tín hiệu (Signal decay rate).
+* $\kappa_f$: Hằng số phản hồi tự điều chỉnh (Feedback rate constant).
+2. Động lực học Lưu lượng máu:
+Tín hiệu $s$ trực tiếp lái sự thay đổi của lưu lượng máu $f$:
+
+
+
+
+$$\frac{df}{dt} = s$$
+3. Động lực học Thể tích (Hiệu ứng Balloon):
+Sự thay đổi thể tích $v$ phụ thuộc vào sự chênh lệch giữa dòng vào $f$ và dòng ra $f_{out}(v)$. Dòng ra được mô hình hóa theo định luật Grubb ($f_{out} = v^{1/\alpha}$):
+
+
+
+
+$$\tau_0 \frac{dv}{dt} = f - f_{out}(v) = f - v^{1/\alpha}$$
+* $\tau_0$: Thời gian trung chuyển trung bình lúc nghỉ (Mean transit time).
+* $\alpha$: Hệ số Grubb (độ cứng của mạch máu), thường $\alpha \approx 0.32$. Mạch máu cứng có $\alpha$ thấp, mạch máu đàn hồi có $\alpha$ cao.
+4. Động lực học Deoxyhemoglobin:
+Sự thay đổi lượng dHb $q$ phụ thuộc vào lượng dHb đi vào (dòng vào $\times$ phần chiết xuất oxy $E$) trừ đi lượng dHb đi ra (dòng ra $\times$ nồng độ dHb hiện tại):
+
+
+
+
+$$\tau_0 \frac{dq}{dt} = f \frac{E(f)}{E_0} - f_{out}(v) \frac{q}{v}$$
+
+
+Phần chiết xuất oxy $E(f)$ là một hàm phi tuyến của dòng chảy: $E(f) = 1 - (1 - E_0)^{1/f}$. Do đó:
+
+
+
+
+$$\tau_0 \frac{dq}{dt} = f \frac{1 - (1 - E_0)^{1/f}}{E_0} - v^{1/\alpha - 1} q$$
+* $E_0$: Phân suất chiết xuất oxy lúc nghỉ (Resting oxygen extraction fraction).
+5. Phương trình Quan sát BOLD:
+Tín hiệu BOLD đo được $y(t)$ là một hàm phi tuyến của $v$ và $q$:
+
+
+
+
+$$y(t) = V_0 \left[ k_1 (1 - q) + k_2 \left( 1 - \frac{q}{v} \right) + k_3 (1 - v) \right]$$
+
+
+Các hệ số $k_1, k_2, k_3$ phụ thuộc vào cường độ từ trường của máy quét (ví dụ: 1.5T, 3T, 7T) và các tham số vật lý như $E_0$ và tỷ lệ tín hiệu nội mạch/ngoại mạch.8
+3.3 Ý nghĩa đối với Generative AI
+Hệ phương trình này cung cấp một ràng buộc vật lý cứng ("hard constraint"). Bất kỳ mô hình AI nào sinh ra dữ liệu fMRI đều phải tạo ra một chuỗi thời gian $y(t)$ có thể giải thích được bằng hệ ODE này với một đầu vào $u(t)$ hợp lý. SynBrain và các mô hình trước đó hoàn toàn bỏ qua cấu trúc này, dẫn đến nguy cơ sinh ra các tín hiệu "ảo giác" (hallucinated) không có cơ sở sinh học.
+4. Tổng quan về Generative AI năm 2025: Flow Matching và Physics-Informed Learning
+Trước khi đề xuất mô hình mới, cần xem xét các công cụ mạnh mẽ nhất hiện có trong năm 2025: Flow Matching và Physics-Informed Neural Networks (PINNs).
+4.1 Sự trỗi dậy của Flow Matching (FM)
+Trong khi SynBrain dùng VAE và MindSimulator dùng Diffusion, xu hướng SOTA năm 2025 là Flow Matching.13
+* Nguyên lý: Các mô hình Diffusion sinh dữ liệu bằng cách đảo ngược một quá trình khuếch tán ngẫu nhiên (Stochastic Differential Equation - SDE), tạo ra các quỹ đạo cong và ồn. Ngược lại, Flow Matching (đặc biệt là Optimal Transport Flow Matching) học một trường vector tất định $v_t(x)$ đẩy các điểm dữ liệu từ phân phối nhiễu (noise) sang phân phối dữ liệu (data) theo các đường thẳng tối ưu.
+* Ưu điểm:
+   1. Tốc độ: Vì quỹ đạo là đường thẳng, quá trình giải ODE số học (numerical integration) nhanh hơn và ổn định hơn rất nhiều so với giải SDE của Diffusion (chỉ cần 10-20 bước thay vì 1000 bước).
+   2. Tính Tất định: Flow Matching cho phép ánh xạ 1-1 giữa nhiễu và dữ liệu, giúp dễ dàng kiểm soát và nội suy trong không gian tiềm ẩn.
+4.2 Physics-Informed Generative Models
+Các nghiên cứu gần đây như Physics-Based Flow Matching (PBFM) 16 và Physics-Constrained Flow Matching (PCFM) 18 đã đưa ra cách tích hợp phương trình vi phân vào mô hình sinh.
+* Cơ chế: PBFM thêm một hạng tử "physics residual" vào hàm mất mát, phạt mô hình nếu đạo hàm của dữ liệu sinh ra không tuân theo phương trình vật lý (ví dụ: Navier-Stokes cho chất lỏng). PCFM thậm chí còn mạnh hơn, sử dụng các bước chiếu (projection steps) trong quá trình suy luận để buộc dữ liệu phải nằm trên đa tạp (manifold) thỏa mãn phương trình vi phân.
+5. Đề xuất Framework: PhysioNeuroFlow
+Dựa trên sự phân tích kỹ lưỡng về SynBrain, mô hình Balloon-Windkessel, và công nghệ Flow Matching, chúng tôi đề xuất một framework mới mang tên PhysioNeuroFlow. Mô hình này thay thế cách tiếp cận "hộp đen" của SynBrain bằng một kiến trúc "hộp xám" (grey-box) kết hợp Generative AI với mô phỏng sinh lý học.
+5.1 Triết lý Thiết kế
+SynBrain ánh xạ trực tiếp từ: Hình ảnh $\rightarrow$ BOLD fMRI.
+PhysioNeuroFlow ánh xạ theo quy trình nhân quả sinh học:
+Hình ảnh $\rightarrow$ Hoạt động Thần kinh Tiềm ẩn ($u$) $\rightarrow$ Hệ thống Huyết động học (Balloon Model) $\rightarrow$ BOLD fMRI ($y$).
+Việc tách biệt này mang lại hai lợi ích to lớn:
+1. Khả năng giải thích (Interpretability): Chúng ta có thể truy xuất được hoạt động nơ-ron tiềm ẩn $u(t)$, thứ mà fMRI gián tiếp đo lường.
+2. Tính hợp lệ Sinh lý (Physiological Validity): Tín hiệu đầu ra được đảm bảo tuân thủ các quy luật huyết động học, loại bỏ các nhiễu phi lý.
+5.2 Kiến trúc Chi tiết
+Framework bao gồm ba module chính:
+Module 1: Semantic-to-Neural Flow (S2N-Flow)
+Module này thay thế S2N Mapper của SynBrain. Thay vì dự đoán tham số VAE, nó sử dụng Conditional Flow Matching để sinh ra chuỗi thời gian hoạt động thần kinh $u(t)$ từ embedding hình ảnh.
+* Input: Embedding ngữ nghĩa $z_{stim}$ từ một mô hình VideoMAE (để bắt được đặc trưng động của video/hình ảnh) thay vì CLIP tĩnh.
+* Cơ chế: Học một trường vector $v_\theta(x_t, t, z_{stim})$ để vận chuyển phân phối nhiễu Gaussian $p_0$ sang phân phối hoạt động thần kinh $p_{neural}(u)$.
+* Hàm mất mát Flow Matching:
+
+$$\mathcal{L}_{FM}(\theta) = \mathbb{E}_{t, u_1, u_0} \| v_\theta(\psi_t(u_0), t, z_{stim}) - (u_1 - u_0) \|^2$$
+
+Trong đó $\psi_t(u_0) = (1-t)u_0 + t u_1$ là đường dẫn nội suy tuyến tính (Optimal Transport path). Mục tiêu là vector chỉ hướng thẳng từ nhiễu đến dữ liệu thần kinh đích.
+Module 2: Differentiable Hemodynamic Block (DHB)
+Đây là trái tim sinh lý học của mô hình. Nó là một lớp Neural ODE thực hiện tích phân hệ phương trình Balloon-Windkessel.
+   * Input: Chuỗi hoạt động thần kinh $u(t)$ được sinh ra từ Module 1.
+   * Operation: Sử dụng một bộ giải ODE khả vi (differentiable ODE solver) như torchdiffeq để giải hệ phương trình (1)-(4) trong Section 4.2 theo thời gian $t$.
+   * Output: Trạng thái huyết động $\mathbf{h}(t) = [s, f, v, q]$ và tín hiệu BOLD $\hat{y}(t)$ thông qua phương trình quan sát (5).
+   * Tính khả vi: Vì bộ giải ODE là khả vi, chúng ta có thể lan truyền ngược (backpropagate) gradient từ lỗi tái tạo BOLD $\mathcal{L}_{Recon}$ xuyên qua các phương trình vi phân để cập nhật trọng số của Module 1. Điều này buộc Module 1 phải học cách sinh ra các tín hiệu thần kinh $u(t)$ sao cho khi đi qua hệ thống mạch máu não, chúng tạo ra tín hiệu fMRI chính xác.
+Module 3: Parameter Hypernetwork
+Mỗi người có một hệ thống mạch máu khác nhau (độ cứng mạch máu $\alpha$, thời gian trung chuyển $\tau_0$ khác nhau). SynBrain bỏ qua điều này. PhysioNeuroFlow sử dụng một Hypernetwork nhỏ để dự đoán các tham số sinh lý $\Phi_{subj} = \{\alpha, \tau_0, \epsilon\}$ từ ID của đối tượng hoặc từ dữ liệu hiệu chuẩn (resting-state fMRI).
+   * Điều này biến mô hình thành một hệ thống cá nhân hóa (personalized), có khả năng thích ứng với các bệnh lý mạch máu (ví dụ: người già có mạch máu cứng hơn, $\alpha$ thấp hơn).
+5.3 Mô hình hóa Toán học Framework Đề xuất
+Hàm mục tiêu tổng thể của PhysioNeuroFlow là sự kết hợp giữa độ chính xác dữ liệu và sự tuân thủ vật lý:
+
+
+$$\mathcal{L}_{Total} = \mathcal{L}_{Recon} + \lambda_{FM} \mathcal{L}_{FM} + \lambda_{Bio} \mathcal{L}_{Bio}$$
+1. Reconstruction Loss ($\mathcal{L}_{Recon}$):
+Đo lường sai số giữa tín hiệu BOLD tổng hợp $\hat{y}$ và tín hiệu thực tế $y_{gt}$.
+
+
+
+
+$$\mathcal{L}_{Recon} = \| \hat{y} - y_{gt} \|_2^2 + \lambda_{corr} (1 - \text{Pearson}(\hat{y}, y_{gt}))$$
+
+
+Chúng ta kết hợp cả MSE và Pearson Correlation để bắt cả biên độ và hình dạng tín hiệu.
+2. Flow Matching Loss ($\mathcal{L}_{FM}$):
+Đảm bảo trường vector hội tụ về đường dẫn tối ưu. Tuy nhiên, vì chúng ta không có dữ liệu thực tế của $u(t)$ (ẩn), chúng ta sử dụng kỹ thuật Teacher Forcing hoặc Blind Deconvolution. Bước đầu tiên, chúng ta dùng phương pháp đảo ngược mô hình Balloon (Inversion) trên dữ liệu fMRI thực để ước lượng một "pseudo-ground-truth" $u_{gt}$, sau đó dùng nó để huấn luyện Flow Matching.
+3. Biophysical Regularization ($\mathcal{L}_{Bio}$):
+Để đảm bảo các tham số sinh lý $\Phi_{subj}$ do Hypernetwork dự đoán nằm trong phạm vi sinh học hợp lý, chúng ta sử dụng một hàm phạt KL-divergence so với phân phối tiên nghiệm (prior) của người khỏe mạnh (dựa trên văn liệu y khoa).
+$$ \mathcal{L}{Bio} = D{KL}(Q(\Phi|Subject) |
+| P_{prior}(\Phi)) $$
+Ví dụ, $\alpha$ nên nằm trong khoảng $[0.2, 0.4]$. Nếu mô hình dự đoán $\alpha=1.5$, hàm mất mát này sẽ phạt nặng.
+5.4 Giải quyết bài toán One-to-Many
+PhysioNeuroFlow giải quyết bài toán ánh xạ một-nhiều một cách cơ chế hơn SynBrain:
+   * SynBrain: Lấy mẫu ngẫu nhiên vector tiềm ẩn $z$. Mọi biến thiên được gộp chung vào $z$.
+   * PhysioNeuroFlow: Tách biệt nguồn gốc biến thiên.
+   1. Biến thiên Thần kinh: Lấy mẫu từ nhiễu $p_0$ trong Flow Matching để tạo ra các $u(t)$ khác nhau (nơ-ron bắn tín hiệu mạnh/yếu khác nhau).
+   2. Biến thiên Huyết động: Lấy mẫu các tham số $\Phi$ từ phân phối của Hypernetwork (mạch máu giãn nở nhanh/chậm khác nhau tùy thời điểm).
+Cách tiếp cận này cho phép kiểm soát "nguyên nhân" của sự thay đổi, mang lại khả năng mô phỏng các tình huống lâm sàng (ví dụ: mô phỏng phản ứng fMRI của bệnh nhân đột quỵ bằng cách thay đổi tham số $\tau_0$ mà giữ nguyên $u(t)$).
+6. Chiến lược Thực hiện và Tính khả thi
+6.1 Công cụ và Thư viện
+      * Pytorch: Framework chính.
+      * torchdiffeq: Để cài đặt Differentiable Hemodynamic Block. Sử dụng phương pháp odeint_adjoint để tính gradient với chi phí bộ nhớ hằng số $O(1)$, cho phép huấn luyện trên các chuỗi thời gian dài mà không bị tràn bộ nhớ.20
+      * TorchCFM: Thư viện cho Conditional Flow Matching và Optimal Transport.21
+6.2 Bảng so sánh Tính năng
+
+
+Đặc điểm
+	SynBrain (2025)
+	PhysioNeuroFlow (Đề xuất)
+	Lợi ích của Framework Đề xuất
+	Mô hình Sinh
+	VAE + Transformer
+	Optimal Transport Flow Matching
+	Đường dẫn sinh thẳng, suy luận nhanh hơn, không bị mờ (no blurring).
+	Không gian Tiềm ẩn
+	Thống kê trừu tượng
+	Hoạt động Thần kinh Sinh học ($u$)
+	Có thể giải thích được về mặt thần kinh học.
+	Cơ chế Vật lý
+	Không (Implicit)
+	Có (Explicit Balloon-Windkessel)
+	Đảm bảo tín hiệu tuân thủ định luật sinh lý, không có "ảo giác" phi lý.
+	Động lực học
+	Tĩnh (Static Volumes)
+	Động (Differential Equations)
+	Mô hình hóa chính xác độ trễ và quán tính của mạch máu.
+	Cá nhân hóa
+	Fine-tuning toàn bộ
+	Tham số Huyết động ($\alpha, \tau$)
+	Zero-shot generalization tốt hơn bằng cách chỉ thay đổi tham số vật lý.
+	7. Kết luận
+Báo cáo này đã phân tích toàn diện bối cảnh công nghệ tổng hợp fMRI từ kích thích thị giác. Mặc dù SynBrain đã đặt nền móng quan trọng bằng việc giới thiệu tính ngẫu nhiên vào mô hình hóa, nó vẫn bị giới hạn bởi bản chất "hộp đen" và các điểm yếu của kiến trúc VAE.
+Framework PhysioNeuroFlow được đề xuất đại diện cho thế hệ tiếp theo của các mô hình tính toán não bộ: Physics-Constrained Generative AI. Bằng cách kết hợp tốc độ và sự ổn định của Flow Matching với sự chặt chẽ khoa học của mô hình Balloon-Windkessel, chúng ta không chỉ tạo ra dữ liệu fMRI chất lượng cao hơn mà còn mở ra cánh cửa để hiểu sâu hơn về cơ chế hoạt động của não bộ. Đây là bước tiến cần thiết để hiện thực hóa các ứng dụng y tế chính xác và các giao diện não-máy tính (BCI) tin cậy trong tương lai gần.
+________________
+Danh mục trích dẫn dữ liệu:
+Các phân tích trong báo cáo dựa trên các tài liệu nghiên cứu: 1 (SynBrain paper)2 (SynBrain context)3 (MindSimulator)5 (MindEye2)13 (Flow Matching)8 (Balloon-Windkessel Model)16 (Physics-Informed Flow Matching).
+Works cited
+      1. 12398_SynBrain_Enhancing_Visua.pdf
+      2. SynBrain: Enhancing Visual-to-fMRI Synthesis via Probabilistic Representation Learning, accessed December 22, 2025, https://arxiv.org/html/2508.10298v3
+      3. [Literature Review] MindSimulator: Exploring Brain Concept Localization via Synthetic FMRI, accessed December 22, 2025, https://www.themoonlight.io/en/review/mindsimulator-exploring-brain-concept-localization-via-synthetic-fmri
+      4. MindSimulator: Exploring Brain Concept Localization via Synthetic FMRI - ResearchGate, accessed December 22, 2025, https://www.researchgate.net/publication/389580797_MindSimulator_Exploring_Brain_Concept_Localization_via_Synthetic_FMRI
+      5. MindEye2: Shared-Subject Models Enable fMRI-To-Image With 1 Hour of Data - ChatPaper, accessed December 22, 2025, https://chatpaper.com/paper/36269
+      6. MindEye2: Shared-Subject Models Enable fMRI-To-Image With 1 Hour of Data - Stability AI, accessed December 22, 2025, https://stability.ai/news/mindeye2-fmri-to-image-with-1-hour-of-data
+      7. An interpretable generative multimodal neuroimaging-genomics framework for decoding Alzheimer's disease - PMC - PubMed Central, accessed December 22, 2025, https://pmc.ncbi.nlm.nih.gov/articles/PMC12481582/
+      8. Dynamic Models of BOLD Contrast - PMC - PubMed Central, accessed December 22, 2025, https://pmc.ncbi.nlm.nih.gov/articles/PMC3545646/
+      9. (PDF) Dynamics of blood flow and oxygenation changes during brain activation: The balloon model - ResearchGate, accessed December 22, 2025, https://www.researchgate.net/publication/13662410_Dynamics_of_blood_flow_and_oxygenation_changes_during_brain_activation_The_balloon_model
+      10. Nonlinear Responses in fMRI: The Balloon Model, Volterra Kernels, and Other Hemodynamics | Request PDF - ResearchGate, accessed December 22, 2025, https://www.researchgate.net/publication/12334483_Nonlinear_Responses_in_fMRI_The_Balloon_Model_Volterra_Kernels_and_Other_Hemodynamics
+      11. A time-invariant visco-elastic windkessel model relating blood flow and blood volume - PMC, accessed December 22, 2025, https://pmc.ncbi.nlm.nih.gov/articles/PMC2719955/
+      12. A Sensitivity Analysis of fMRI Balloon Model - PMC - NIH, accessed December 22, 2025, https://pmc.ncbi.nlm.nih.gov/articles/PMC4442414/
+      13. MOTFM: Flow Matching for Medical Image Synthesis, accessed December 22, 2025, https://milad1378yz.github.io/MOTFM/
+      14. Flow Matching vs Diffusion. Briefly going into mathematical… - Harsh Maheshwari, accessed December 22, 2025, https://harshm121.medium.com/flow-matching-vs-diffusion-79578a16c510
+      15. Optimal-Transport Flow Matching - Emergent Mind, accessed December 22, 2025, https://www.emergentmind.com/topics/optimal-transport-based-flow-matching
+      16. Physics-Based Flow Matching (PBFM) - Emergent Mind, accessed December 22, 2025, https://www.emergentmind.com/topics/physics-based-flow-matching-pbfm
+      17. Flow Matching Meets PDEs: A Unified Framework for Physics-Constrained Generation, accessed December 22, 2025, https://arxiv.org/html/2506.08604v1
+      18. Physics-Constrained Flow Matching: Sampling Generative Models with Hard Constraints, accessed December 22, 2025, https://neurips.cc/virtual/2025/poster/117071
+      19. Physics-Constrained Flow Matching: Sampling Generative Models with Hard Constraints, accessed December 22, 2025, https://openreview.net/forum?id=cf4etwjY7n
+      20. Neural Ordinary Differential Equations - Emergent Mind, accessed December 22, 2025, https://www.emergentmind.com/topics/neural-ordinary-differential-equation
+      21. TorchCFM: a Conditional Flow Matching library - GitHub, accessed December 22, 2025, https://github.com/atong01/conditional-flow-matching
+      22. SynBrain: Enhancing Visual-to-fMRI Synthesis via Probabilistic Representation Learning - OpenReview, accessed December 22, 2025, https://openreview.net/pdf/3971b93a4f08a3549d29904c63d514e0df961001.pdf
+      23. SynBrain: Enhancing Visual-to-fMRI Synthesis via Probabilistic Representation Learning - arXiv, accessed December 22, 2025, https://arxiv.org/pdf/2508.10298
+      24. [PDF] Flow Matching for Generative Modeling - Semantic Scholar, accessed December 22, 2025, https://www.semanticscholar.org/paper/Flow-Matching-for-Generative-Modeling-Lipman-Chen/af68f10ab5078bfc519caae377c90ee6d9c504e9

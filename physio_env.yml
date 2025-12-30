@@ -1,0 +1,53 @@
+name: physio_synbrain
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - tqdm
+  - pyyaml
+  - h5py
+  - nibabel
+  - wandb
+  - pandas
+  # PyTorch & Accelerate
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  # PCFM specific
+  - torchdiffeq
+  - pot  # Optimal Transport
+  - scanpy # For some data handling in PCFM
+  # SynBrain specific
+  - diffusers
+  - transformers
+  - accelerate
+  - einops
+  - lpips
+  - timm
+  - ftfy
+  - regex
+  - clip
+  - pip:
+    - -f https://download.pytorch.org/whl/cu121/torch_stable.html
+    - torch-fidelity
+    - torchmetrics
+    - flow-matching
+    - webdataset
+    - braceexpand
+    - decord
+    - antlr4-python3-runtime
+    - omegaconf
+    - open-clip-torch
+    - umap-learn
+    - xformers
+    - deepspeed
+    - pydantic

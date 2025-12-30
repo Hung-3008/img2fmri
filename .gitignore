@@ -44,7 +44,12 @@ Thumbs.db
 
 # Python interpreter specific files
 tmp/
-lightning_logs/*
-BOLD5000/*
-NSD/*
-data/*
+lightning_logs/
+BOLD5000/
+NSD/
+data/
+checkpoints/
+
+# Output and logs
+results/
+wandb/
