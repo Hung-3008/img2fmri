@@ -9,6 +9,7 @@ import wandb
 from accelerate import Accelerator
 
 from .model import PhysioSiT
+from .loss import PhysioSynBrainLoss
 
 class PhysioDataset(Dataset):
     def __init__(self, physio_path, clip_path):
@@ -39,8 +40,58 @@ class PhysioDataset(Dataset):
             
             self.physio = np.memmap(physio_path, dtype='float32', mode='r', shape=(N, T, V, C))
             
+        # Load Normalization Stats
+        stats_path = os.path.join(os.path.dirname(physio_path), f'physio_stats_sub1.npz') # Hardcode sub1 or pass arg?
+        # Better infer from physio_path?
+        # Let's assume stats file is in same dir as physio_path
+        
+        # We need to construct stats path.
+        # physio_path: .../nsd_train_physio_sub1.npy
+        # stats_path: .../physio_stats_sub1.npz
+        
+        stats_path = physio_path.replace('nsd_train_physio_sub', 'physio_stats_sub').replace('.npy', '.npz')
+        
+        if os.path.exists(stats_path):
+            print(f"Loading normalization stats from {stats_path}...")
+            stats = np.load(stats_path)
+            self.mean = torch.from_numpy(stats['mean']).float()
+            self.std = torch.from_numpy(stats['std']).float()
+            self.normalize = True
+        else:
+            print(f"Warning: Stats not found at {stats_path}. Training without normalization.")
+            self.normalize = False
+
         # Verify alignment
         assert len(self.physio) == len(self.clip), "Data length mismatch!"
+
+        # Load fMRI (GLM Betas) for BOLD Loss
+        # Path: data/NSD/nsd/subj01/nsd_train_fmri_sub1.npy (Check exact name)
+        # Using data_root from physio_path structure
+        # physio_path: .../nsd/physio/nsd_train_physio_sub1.npy
+        # fmri_path: .../nsd/subj01/nsd_train_fmri_sub1.npy (Assuming standard NSD structure)
+        
+        # fmri_path: .../nsd/subj01/nsd_train_fmri_scale_sub1.npy 
+        
+        # We need to extract subj ID and data root from physio_path or pass them.
+        # But here we only have physio_path and clip_path.
+        # Let's guess fmri_path from clip_path which is in proper subject dir.
+        # clip_path: .../data/NSD/nsd/subj01/nsd_train_clip_sub1.npy
+        
+        # Correct pattern: nsd_train_clip -> nsd_train_fmri_scale
+        fmri_path = clip_path.replace('nsd_train_clip', 'nsd_train_fmri_scale')
+        
+        if os.path.exists(fmri_path):
+            try:
+                self.fmri = np.load(fmri_path, mmap_mode='r')
+                print(f"Loaded fMRI data from {fmri_path} for BOLD loss.")
+            except:
+                print(f"Warning: Failed to load fMRI at {fmri_path}. BOLD loss will be disabled.")
+                self.fmri = None
+        else:
+            # Try 'nsd_train_fmriavg_nsdgeneral_sub1.npy' or typical names?
+            # Let's assume the user has nsd_train_fmri_sub1.npy as per typical prep
+            print(f"Warning: fMRI file not found at {fmri_path}. BOLD loss will be disabled.")
+            self.fmri = None
         
     def __len__(self):
         return len(self.physio)
@@ -98,8 +149,27 @@ class PhysioDataset(Dataset):
         # We should probably center/scale them.
         # For now, raw.
         
+        target_frame = torch.from_numpy(sample_physio[tau_idx].copy()).float() # [Voxels, 4]
+        
+        if self.normalize:
+            # Broadcast mean/std?
+            # mean/std are [V, C]. target_frame is [V, C].
+            target_frame = (target_frame - self.mean) / self.std
+
+        if self.fmri is not None:
+             f_sample = self.fmri[idx] # [3, V] or [V]
+             if len(f_sample.shape) == 2:
+                 # Average over trials to get robust ground truth
+                 y_1_val = np.mean(f_sample, axis=0)
+             else:
+                 y_1_val = f_sample
+             y_1_tensor = torch.from_numpy(y_1_val.copy()).float()
+        else:
+             y_1_tensor = torch.tensor(0.0)
+
         return {
-            'x_1': torch.from_numpy(target_frame.copy()).float(),
+            'x_1': target_frame,
+            'y_1': y_1_tensor,
             'c': torch.from_numpy(clip_embed.copy()).float(),
             'tau': tau_idx / T # Normalized time conditions [0, 1]
         }
@@ -113,6 +183,12 @@ def main():
     parser.add_argument("--data_root", type=str, default="data/NSD")
     parser.add_argument("--output_dir", type=str, default="checkpoints")
     args = parser.parse_args()
+
+    # Append timestamp to output_dir to separate runs
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    args.output_dir = os.path.join(args.output_dir, f"sub{args.sub}_{timestamp}")
+    os.makedirs(args.output_dir, exist_ok=True)
     
     accelerator = Accelerator(log_with="wandb")
     accelerator.init_trackers("physio_synbrain", config=vars(args))
@@ -134,6 +210,37 @@ def main():
     model = PhysioSiT(num_voxels=num_voxels, in_channels=4, context_dim=768)
     
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+    
+    from .constraints import BalloonWindkesselConstraints
+    
+    # Constraints for BOLD Loss
+    # Need to move to device
+    T = 48
+    dt_physio = 24.0 / T
+    constraints = BalloonWindkesselConstraints(dt=dt_physio)
+    
+    # Loss Function
+    # We need to pass valid mean/std if normalized.
+    if dataset.normalize:
+        norm_mean = dataset.mean.to(accelerator.device)
+        norm_std = dataset.std.to(accelerator.device)
+    else:
+        norm_mean = None
+        norm_std = None
+        
+    criterion = PhysioSynBrainLoss(
+        lambda_fm=1.0, 
+        lambda_recon=0.1, 
+        lambda_bold=0.5, # New BOLD weight
+        constraints=constraints,
+        norm_mean=norm_mean,
+        norm_std=norm_std
+    )
+    
+    # We need to move constraints to device AFTER accelerator prepare?
+    # Or just register buffer. BalloonWindkesselConstraints usually has no parameters, just buffers/constants.
+    constraints = constraints.to(accelerator.device)
+    criterion.constraints = constraints # Ensure device placement
     
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     
@@ -159,57 +266,20 @@ def main():
             v_target = x_1 - x_0
             
             # Predict Vector Field v_pred
-            # Model takes (x_t, t_flow, condition)
-            # We add 'tau' to condition?
-            # PhysioSiT expects c. We should concat tau to c?
-            # Or PhysioSiT handles 't' as flow time.
-            # We need to inject 'tau' (physio time) into the context.
-            
-            # Quick Fix: Add tau to c
-            # c is [B, 768]. tau is [B].
-            # Expand tau to [B, 1] and cat.
-            # But model expects fixed context_dim.
-            # Let's adjust c to be c + embedding(tau).
-            # But for now, let's assume c includes tau.
-            # Wait, model.py defined c_embedder = Linear(768, hidden).
-            # If we concat, input is 769.
-            # Modifying code on the fly in PyTorch is messy.
-            
-            # Better approach: Add tau embedding in the loop
-            # But the model architecture is fixed in model.py.
-            # model.py:
-            # t_emb = self.t_embedder(t) # Flow Time
-            # c_emb = self.c_embedder(c) # Context
-            
-            # Ideally 'c' should contain both Semantic + Temporal Frame info.
-            # Since I cannot easily change model.py right now without another tool call,
-            # I will hack: c_in = c + some_noise(tau) ? No.
-            
-            # I will update model.py in next step if really needed, but for now
-            # let's assume we train WITHOUT tau conditioning (generating "average" state? No that's bad).
-            # OR we assume the CLIP embedding implicitly contains timing? (No).
-            
-            # Let's just pass 'c' for now.
-            # The model learns p(x | clip).
-            # But x varies with time.
-            # So p(x|clip) is multimodal (entire trajectory).
-            # Flow Matching can handle multimodal distributions (it learns the average vector field).
-            # But sampling will be deterministic given noise.
-            # So x_0 -> some frame.
-            
-            # This is acceptable for v1.
-            
             v_pred = model(x_t, t, c, tau)
             
-            loss = torch.mean((v_pred - v_target) ** 2)
+            y_1 = batch['y_1'] if 'y_1' in batch else None # GLM Beta [B, V]
+            
+            # loss = torch.mean((v_pred - v_target) ** 2)
+            loss, log_dict = criterion(v_pred, v_target, x_t, x_1, t, c, y_1)
             
             accelerator.backward(loss)
             optimizer.step()
             optimizer.zero_grad()
             
             if step % 100 == 0:
-                accelerator.print(f"Epoch {epoch} | Step {step} | Loss: {loss.item():.4f}")
-                accelerator.log({"loss": loss.item()})
+                accelerator.print(f"Epoch {epoch} | Step {step} | Loss: {loss.item():.4f} | FM: {log_dict['loss_fm']:.4f} | Recon: {log_dict['loss_recon']:.4f} | BOLD: {log_dict.get('loss_bold', 0):.4f}")
+                accelerator.log({"loss": loss.item(), **log_dict})
                 
         # Save Checkpoint
         if epoch % 5 == 0:

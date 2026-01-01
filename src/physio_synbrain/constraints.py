@@ -29,6 +29,11 @@ class BalloonWindkesselConstraints(nn.Module):
         """
         s, f, v, q = x.unbind(-1)
         
+        # Enforce positivity for physiological variables to avoid NaN in pow()
+        f = torch.clamp(f, min=1e-6)
+        v = torch.clamp(v, min=1e-6)
+        q = torch.clamp(q, min=1e-6)
+        
         if u is None:
             u = torch.zeros_like(s)
             
@@ -86,12 +91,16 @@ class BalloonWindkesselConstraints(nn.Module):
         """
         s, f, v, q = x.unbind(-1)
         
+        # Clamp for safety
+        v = torch.clamp(v, min=1e-6)
+        q = torch.clamp(q, min=1e-6)
+        
         k1 = 7.0 * self.E0
         k2 = 2.0
         k3 = 2.0 * self.E0 - 0.2
         
         # Avoid division by zero
-        v_safe = torch.clamp(v, min=1e-6)
+        v_safe = v
         
         y = self.V0 * (k1 * (1.0 - q) + k2 * (1.0 - q / v_safe) + k3 * (1.0 - v))
         return y
