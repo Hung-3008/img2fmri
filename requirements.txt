@@ -1,0 +1,49 @@
+--find-links https://download.pytorch.org/whl/cu121/torch_stable.html
+
+# Core scientific packages
+numpy
+scipy
+scikit-learn
+matplotlib
+tqdm
+pyyaml
+h5py
+nibabel
+wandb
+pandas
+
+# PyTorch
+torch
+torchvision
+torchaudio
+
+# PCFM specific
+torchdiffeq
+POT
+scanpy
+
+# SynBrain specific
+diffusers
+transformers
+accelerate
+einops
+lpips
+timm
+ftfy
+regex
+git+https://github.com/openai/CLIP.git
+
+# Pip specific from env file
+torch-fidelity
+torchmetrics
+flow-matching
+webdataset
+braceexpand
+decord
+antlr4-python3-runtime
+omegaconf
+open-clip-torch
+umap-learn
+xformers
+deepspeed
+pydantic

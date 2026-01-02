@@ -1,161 +1,165 @@
+
 import torch
 import torch.nn as nn
 import numpy as np
-from timm.models.vision_transformer import PatchEmbed, Attention, Mlp
+import torchdiffeq
+try:
+    from .neural_model import NeuralFlow
+    from .constraints import BalloonWindkesselConstraints
+except ImportError:
+    from neural_model import NeuralFlow
+    from constraints import BalloonWindkesselConstraints
 
-def modulate(x, shift, scale):
-    return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
-
-class PhysioSiTBlock(nn.Module):
-    def __init__(self, hidden_size, num_heads, mlp_ratio=4.0, **block_kwargs):
+class FlowODEWrapper(nn.Module):
+    def __init__(self, neural_flow, z_stim):
         super().__init__()
-        self.norm1 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.attn = Attention(hidden_size, num_heads=num_heads, qkv_bias=True)
-        self.norm2 = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        self.mlp = Mlp(in_features=hidden_size, hidden_features=mlp_hidden_dim, act_layer=nn.GELU, drop=0)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 6 * hidden_size, bias=True)
-        )
+        self.neural_flow = neural_flow
+        self.z_stim = z_stim # [B, D]
+        
+    def forward(self, t, u):
+        # t is scalar
+        # u is [B, V, T] (Time as Channels)
+        # Verify batch size matches
+        # NeuralFlow uses u.shape[0]
+        t_expand = torch.ones(u.shape[0], device=u.device) * t
+        return self.neural_flow(u, t_expand, self.z_stim)
 
-    def forward(self, x, c):
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
-            self.adaLN_modulation(c).chunk(6, dim=-1)
-        )
-        x = x + gate_msa.unsqueeze(1) * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
-        x = x + gate_mlp.unsqueeze(1) * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
-        return x
-
-class FinalLayer(nn.Module):
-    def __init__(self, hidden_size, patch_size, out_channels):
+class BalloonODEWrapper(nn.Module):
+    def __init__(self, dt, params, constraints, u_trajectory):
         super().__init__()
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        # Linear map to patches [Batch, Patches, PatchSize*Channels]
-        self.linear = nn.Linear(hidden_size, patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
-        )
+        self.dt = dt
+        # params: alpha, tau_0, epsilon
+        self.alpha, self.tau_0, self.epsilon = params
+        self.constraints = constraints
+        self.u_trajectory = u_trajectory # [B, V, T] (Time channels from Flow)
+        # Note: u_trajectory is treated as "constant context" for ADJOINT unless we traverse it.
+        # Adjoint method backprops through state y0 and params.
+        # u_trajectory is NOT a parameter of this Module (it's input).
+        # We need gradients w.r.t u_trajectory.
+        # Strict Adjoint usually requires inputs to be args to forward or params.
+        # If u_trajectory is closure-captured, standard adjoint might miss it?
+        # Actually it works if we add it to `adjoint_params`?
+        # OR: u_trajectory is fixed during Integration (it drives dynamics).
+        # If we want dL/du, we need u to be part of the state? No.
+        # We rely on the fact that 'odeint_adjoint' supports backprop via VJP.
+        # If u_trajectory is used in f(t, y), VJP will flow to u_trajectory?
+        # Reference: torchdiffeq only computes gradients for: y0, t, and partials w.r.t params.
+        # Explicit inputs in closure are tricky.
+        # Ideally we pass u_trajectory as a parameter?
+        # But u_trajectory is output of previous step.
+        # Hack: Concatenate u onto state?
+        # Or just use standard odeint for Balloon (step count is fixed and small-ish, memory is low compared to Transformer Flow).
+        # Balloon Step: MLP is small (Constraints).
+        # Memory for Balloon integration is negligible. 
+        # State [B, V, 4]. 4 floats per voxel.
+        # 48 steps -> 48 * 4 * V * B.
+        # 48 * 4 * 370k * 4 * 4 ~ 1 GB.
+        # So standard odeint is FINE for Balloon.
+        # Adjoint is CRITICAL for Flow (Transformer).
+        pass
 
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
-        x = modulate(self.norm_final(x), shift, scale)
-        x = self.linear(x)
-        return x
+    def forward(self, t, state):
+        # ... logic ...
+        # I will inline this logic in the closure for standard odeint usage in DHB.
+        # Flow uses Adjoint.
+        pass
 
-class TimestepEmbedder(nn.Module):
-    def __init__(self, hidden_size, frequency_embedding_size=256):
+class Hypernetwork(nn.Module):
+    def __init__(self, num_subjects=8, embedding_dim=32):
         super().__init__()
+        self.embedding = nn.Embedding(num_subjects + 1, embedding_dim)
         self.mlp = nn.Sequential(
-            nn.Linear(frequency_embedding_size, hidden_size, bias=True),
+            nn.Linear(embedding_dim, 64),
             nn.SiLU(),
-            nn.Linear(hidden_size, hidden_size, bias=True),
+            nn.Linear(64, 3), # alpha, tau_0, epsilon
+            nn.Sigmoid() 
         )
-        self.frequency_embedding_size = frequency_embedding_size
+        
+    def forward(self, subject_id):
+        raw = self.mlp(self.embedding(subject_id))
+        alpha = raw[:, 0] * 0.3 + 0.2    
+        tau_0 = raw[:, 1] * 1.5 + 0.5    
+        epsilon = raw[:, 2] * 1.5 + 0.1  
+        return alpha, tau_0, epsilon
 
-    def forward(self, t):
-        # t: [Batch]
-        half = self.frequency_embedding_size // 2
-        freqs = torch.exp(
-            -np.log(10000) * torch.arange(start=0, end=half, dtype=torch.float32) / half
-        ).to(device=t.device)
-        args = t[:, None].float() * freqs[None]
-        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
-        if self.frequency_embedding_size % 2:
-            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
-        return self.mlp(embedding)
-
-class PhysioSiT(nn.Module):
-    """
-    Physio-SynBrain Transformer
-    Inputs: 
-        x: [Batch, Voxels, 4] (Physiological State)
-        t: [Batch] (Time)
-        c: [Batch, ContextDim] (S2N output)
-    """
-    def __init__(
-        self,
-        num_voxels,
-        in_channels=4,
-        hidden_size=768,
-        depth=12,
-        num_heads=12,
-        patch_size=64, # Number of voxels per patch
-        context_dim=768
-    ):
+class DifferentiableHemodynamicBlock(nn.Module):
+    def __init__(self, dt=0.5):
         super().__init__()
-        self.num_voxels = num_voxels
-        self.in_channels = in_channels
-        self.patch_size = patch_size
+        self.dt = dt
+        self.constraints = BalloonWindkesselConstraints(dt=dt)
         
-        # Calculate number of patches
-        # We pad num_voxels to be divisible by patch_size if needed
-        self.pad_voxels = (patch_size - (num_voxels % patch_size)) % patch_size
-        self.total_voxels = num_voxels + self.pad_voxels
-        self.num_patches = self.total_voxels // patch_size
+    def forward(self, u_trajectory, t_eval, physio_params):
+        # Use standard odeint here
         
-        # Input Embedding
-        self.x_embed = nn.Linear(patch_size * in_channels, hidden_size)
-        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, hidden_size))
+        u_trajectory = u_trajectory.permute(0, 2, 1) # [B, T, V]
+        B, T_steps, V = u_trajectory.shape
+        alpha, tau_0, epsilon = physio_params
         
-        # Time & Context Embedding
-        self.t_embedder = TimestepEmbedder(hidden_size)
-        self.tau_embedder = TimestepEmbedder(hidden_size) # Physio Time
-        self.c_embedder = nn.Linear(context_dim, hidden_size) # Adapt context to hidden size
-        
-        # Transformer Blocks
-        self.blocks = nn.ModuleList([
-            PhysioSiTBlock(hidden_size, num_heads) for _ in range(depth)
-        ])
-        
-        # Final Layer
-        self.final_layer = FinalLayer(hidden_size, patch_size, in_channels)
-
-    def unpatchify(self, x):
-        """
-        x: [Batch, Patches, PatchSize * Channels]
-        returns: [Batch, Voxels, Channels]
-        """
-        B, P, _ = x.shape
-        x = x.view(B, P, self.patch_size, self.in_channels)
-        x = x.view(B, P * self.patch_size, self.in_channels)
-        return x[:, :self.num_voxels, :]
-
-    def patchify(self, x):
-        """
-        x: [Batch, Voxels, Channels]
-        returns: [Batch, Patches, PatchSize * Channels]
-        """
-        B, V, C = x.shape
-        # Pad
-        if self.pad_voxels > 0:
-            pad = torch.zeros(B, self.pad_voxels, C, device=x.device)
-            x = torch.cat([x, pad], dim=1)
-        
-        x = x.view(B, self.num_patches, self.patch_size * C)
-        return x
-
-    def forward(self, x, t, c, tau):
-        # x: [Batch, Voxels, 4]
-        # t: [Batch] - Flow Time
-        # c: [Batch, D] - Semantic Context
-        # tau: [Batch] - Physio Time
-        
-        x = self.patchify(x) # [B, P, PatchSize*4]
-        x = self.x_embed(x)  # [B, P, D]
-        x = x + self.pos_embed
-        
-        # Combine Time and Context
-        t_emb = self.t_embedder(t) # [B, D]
-        tau_emb = self.tau_embedder(tau) # [B, D]
-        c_emb = self.c_embedder(c) # [B, D]
-        
-        cond = t_emb + c_emb + tau_emb # Additive conditioning
-        
-        for block in self.blocks:
-            x = block(x, cond)
+        def dynamics_func(t, state):
+            t_idx = t / self.dt
+            idx_low = torch.floor(t_idx).long().clamp(0, T_steps-2)
+            idx_high = idx_low + 1
+            weight = t_idx - idx_low.float()
+            u_low = u_trajectory[:, idx_low, :]
+            u_high = u_trajectory[:, idx_high, :]
+            u_t = (1 - weight).view(-1, 1) * u_low + weight.view(-1, 1) * u_high
             
-        x = self.final_layer(x, cond) # [B, P, PatchSize*4]
-        x = self.unpatchify(x) # [B, V, 4]
-        return x
+            s, f, v, q = state.unbind(-1)
+            f = torch.clamp(f, min=1e-6)
+            v = torch.clamp(v, min=1e-6)
+            q = torch.clamp(q, min=1e-6)
+            
+            eps_b = epsilon.view(B, 1)
+            tau_0_b = tau_0.view(B, 1)
+            alpha_b = alpha.view(B, 1)
+            
+            ds = eps_b * u_t - self.constraints.kappa_s * s - self.constraints.kappa_f * (f - 1.0)
+            df = s
+            dv = (f - v**(1.0/alpha_b)) / tau_0_b
+            
+            dq_num = f * (1.0 - (1.0 - self.constraints.E0)**(1.0/f)) / self.constraints.E0
+            dq_den = v**(1.0/alpha_b - 1.0) * q
+            dq = (dq_num - dq_den) / tau_0_b
+            
+            return torch.stack([ds, df, dv, dq], dim=-1)
+            
+        x0 = torch.zeros(B, V, 4, device=u_trajectory.device)
+        x0[:, :, 1:] = 1.0
+        
+        # Standard odeint for DHB closure
+        trajectory = torchdiffeq.odeint(dynamics_func, x0, t_eval, method='euler')
+        trajectory = trajectory.permute(1, 0, 2, 3)
+        return trajectory
+
+class PhysioNeuroFlow(nn.Module):
+    def __init__(self, num_voxels, context_dim=768, time_steps=48, dt=0.5, patch_size=256):
+        super().__init__()
+        self.time_steps = time_steps
+        self.dt = dt
+        self.neural_flow = NeuralFlow(num_voxels, in_channels=time_steps, context_dim=context_dim, patch_size=patch_size)
+        self.hypernet = Hypernetwork()
+        self.dhb = DifferentiableHemodynamicBlock(dt=dt)
+        
+    def generate_neural_activity(self, z_stim):
+        B = z_stim.shape[0]
+        device = z_stim.device
+        u_0 = torch.randn(B, self.neural_flow.num_voxels, self.time_steps, device=device)
+        
+        # Use Wrapper for Adjoint
+        wrapper = FlowODEWrapper(self.neural_flow, z_stim)
+        
+        t_span = torch.linspace(0, 1, steps=20, device=device) 
+        
+        # Use Adjoint for Flow
+        traj = torchdiffeq.odeint_adjoint(wrapper, u_0, t_span, method='euler')
+        
+        u_1 = traj[-1]
+        return u_1
+
+    def forward_train(self, z_stim, subject_id):
+        u_pred = self.generate_neural_activity(z_stim)
+        physio_params = self.hypernet(subject_id)
+        t_eval = torch.arange(self.time_steps, device=z_stim.device) * self.dt
+        state_trajectory = self.dhb(u_pred, t_eval, physio_params)
+        y_pred = self.dhb.constraints.observation(state_trajectory)
+        return y_pred, u_pred
