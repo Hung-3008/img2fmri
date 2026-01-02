@@ -148,10 +148,12 @@ class PhysioNeuroFlow(nn.Module):
         # Use Wrapper for Adjoint
         wrapper = FlowODEWrapper(self.neural_flow, z_stim)
         
-        t_span = torch.linspace(0, 1, steps=20, device=device) 
+        t_span = torch.tensor([0.0, 1.0], device=device)
         
         # Use Adjoint for Flow
-        traj = torchdiffeq.odeint_adjoint(wrapper, u_0, t_span, method='euler')
+        # Use dopri5 for adaptive step size without storing intermediates
+        # or fixed steps if options provided, but we only output t_span points
+        traj = torchdiffeq.odeint_adjoint(wrapper, u_0, t_span, method='dopri5')
         
         u_1 = traj[-1]
         return u_1

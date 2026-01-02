@@ -20,7 +20,8 @@ def main():
     print(f"Processing Subject {args.sub}...")
     
     # 1. Load Brain Mask
-    mask_path = os.path.join(args.data_root, f'nsddata/ppdata/subj{args.sub:02d}/func1pt8mm/brainmask.nii.gz')
+    # 1. Load Brain Mask (Use nsdgeneral ROI for reduced voxel count)
+    mask_path = os.path.join(args.data_root, f'nsddata/ppdata/subj{args.sub:02d}/func1pt8mm/roi/nsdgeneral.nii.gz')
     if not os.path.exists(mask_path):
         print(f"Mask not found at {mask_path}")
         return
@@ -82,7 +83,17 @@ def main():
         
     if len(all_betas) > 0:
         full_betas = np.concatenate(all_betas, axis=0) # [Total_Trials, V]
-        print(f"Total fMRI shape: {full_betas.shape}")
+        
+        # Apply Scaling (SynBrain Compatibility: /2000.0)
+        print("Scaling fMRI data (/2000.0)...")
+        full_betas = full_betas / 2000.0
+        
+        # Clip outliers
+        # SynBrain doesn't explicitly clip after /2000 but standardizing usually follows.
+        # We keep clipping to [-5, 5] just to be safe from artifacts.
+        full_betas = np.clip(full_betas, -5.0, 5.0)
+        
+        print(f"Total fMRI shape: {full_betas.shape} | Range: [{full_betas.min():.4f}, {full_betas.max():.4f}]")
         
         out_fmri = os.path.join(args.output_dir, f'nsd_train_fmri_sub{args.sub}.npy')
         np.save(out_fmri, full_betas)
@@ -95,29 +106,22 @@ def main():
     if os.path.exists(exp_path):
         print("Loading Experiment Design...")
         mat = scipy.io.loadmat(exp_path)
-        # 'subjectim' is usually [N_subjects, N_images_per_subject] ?
-        # Or 'masterordering' [N_images] in viewing order?
-        
-        # NSD Manual: 
-        # subjectim: [30000 x 8] - Which 73k image ID corresponds to 1...30000 index for each subject.
-        # masterordering: [30000 x 8] - 1-based index into 73k images.
-        
-        # Actually simplest is 'masterordering'.
-        # It lists the 73k-ID for each trial.
-        # Subj 1 is column 0.
         
         if 'masterordering' in mat:
-            masterordering = mat['masterordering'] # [N_trials, N_subjects]
-            subj_order = masterordering[:, args.sub-1]
+            masterordering = mat['masterordering'] # [N_trials (30000), N_subjects]
+            subj_order = masterordering[:, args.sub-1] # [30000]
+             
+            # Flatten to ensure 1D
+            subj_order = subj_order.flatten()
             
             # Since betas are session-based, we need to know how many trials we actually have betas for.
-            # NSD has 40 sessions * 750 trials = 30,000 trials.
-            # If we only downloaded subset of sessions, we slice `subj_order`.
-            
             n_samples = full_betas.shape[0] if len(all_betas) > 0 else 0
             
+            # Slice to match available fMRI data
+            subj_order = subj_order[:n_samples]
+            
             # 1-based to 0-based
-            subj_order = subj_order[:n_samples] - 1 
+            subj_order = subj_order - 1 
             
             out_stim = os.path.join(args.output_dir, f'nsd_train_stim_idxs_sub{args.sub}.npy')
             np.save(out_stim, subj_order)

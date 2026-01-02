@@ -10,6 +10,7 @@ import wandb
 from accelerate import Accelerator
 
 from model import PhysioNeuroFlow
+from metrics import compute_metrics
 
 class PhysioDataset(Dataset):
     def __init__(self, fmri_path, stim_idxs_path, clip_path=None, stim_hdf5_path=None):
@@ -36,11 +37,11 @@ class PhysioDataset(Dataset):
     
     def __getitem__(self, idx):
         # fMRI Beta Map [V]
-        y_real = torch.from_numpy(self.fmri[idx]).float()
+        y_real = torch.from_numpy(self.fmri[idx].copy()).float()
         
         # CLIP Embedding [768]
         if self.use_precomputed_clip:
-            c = torch.from_numpy(self.clip[idx]).float()
+            c = torch.from_numpy(self.clip[idx].copy()).float()
         else:
             c = torch.zeros(768) # Placeholder
             
@@ -81,7 +82,7 @@ def main():
         raise FileNotFoundError(f"Processed fMRI not found at {fmri_path}. Run prepare_nsd_numpy.py first.")
 
     dataset = PhysioDataset(fmri_path, stim_idxs_path, clip_path)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=0)
     
     # Model
     model = PhysioNeuroFlow(
@@ -132,9 +133,17 @@ def main():
             optimizer.zero_grad()
             
             if step % 20 == 0:
-                accelerator.print(f"Epoch {epoch} | Step {step} | Loss: {loss.item():.4f} | Recon: {loss_recon.item():.4f} | Reg: {loss_reg.item():.4f}")
-                accelerator.log({"loss": loss.item(), "recon": loss_recon.item(), "reg": loss_reg.item()})
+                # Compute Metrics
+                metrics = compute_metrics(y_pred_amp, y_real)
                 
+                accelerator.print(f"Epoch {epoch} | Step {step} | Loss: {loss.item():.4f} | Recon: {loss_recon.item():.4f} | Pearson: {metrics['pearson']:.4f}")
+                accelerator.log({
+                    "loss": loss.item(), 
+                    "recon": loss_recon.item(), 
+                    "reg": loss_reg.item(),
+                    "pearson": metrics['pearson'].item(),
+                    "mse": metrics['mse'].item()
+                })
         if epoch % 5 == 0:
             accelerator.save_state(os.path.join(args.output_dir, f"epoch_{epoch}"))
 

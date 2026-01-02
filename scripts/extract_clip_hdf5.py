@@ -42,7 +42,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_root', type=str, default='/workspace/sdb1/img2fmri/NSD/data')
     parser.add_argument('--sub', type=int, default=1)
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32)
     args = parser.parse_args()
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -59,7 +59,7 @@ def main():
         
     print(f"Loading indices for Subj {args.sub}...")
     dataset = HDF5IndexedDataset(hdf5_path, idxs_path)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=4, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size, num_workers=0, shuffle=False)
     
     # Load CLIP (HuggingFace)
     print("Loading CLIP (HF)...")
